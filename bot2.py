@@ -118,6 +118,7 @@ from g4f.client import Client
 from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 import base64
+from prompts import get_system_instruction, get_summary_prompt, get_image_prompt, get_info_prompt, get_ai_tone_prompt, DEFAULT_AI_TONE, KIDS_INFO, LOADING_MESSAGE_TEXT, MARKDOWN_V2_PARSE_MODE
 
 
 
@@ -161,29 +162,9 @@ mm_model = ChatOpenAI(model="gpt-4o")
 # ============================================================
 #         PROMPT TEMPLATES & CONSTANTS
 # ============================================================
-OPTIMIZED_SYSTEM_PROMPT = (
-    "You are a digital kids nurturing assistant named Blue. Provide accurate, personalized, and natural advice to parents regarding child care. "
-    "Consider the following child information: {kids_information}. "
-    "Also, take into account the previous conversation history: {conversation_context}. "
-    "Relevant long-term memories: {long_term_memory}. "
-    "Adjust your tone based on this setting: {ai_tone}. "
-    "Do not include any greetings, salutations, or sticker instructions in your response. "
-    "Be direct, concise, and fully answer the user's query in warm, supportive Persian."
-)
-DEFAULT_AI_TONE = "دوستانه"
-# Global kid info variable; may be updated per user as well.
-KIDS_INFO = ""
-LOADING_MESSAGE_TEXT = "درحال فکر کردن 🧐..."
-MARKDOWN_V2_PARSE_MODE = "MarkdownV2"
-JSON_FILE_ENCODING = "utf-8"
-
-
 # Global settings for user-specific configuration
 setting_data = {}
 STICKER_SETTING = None  # Sticker ID if needed
-
-# Create prompt templates
-system_template = PromptTemplate.from_template(OPTIMIZED_SYSTEM_PROMPT)
 
 
 # ============================================================
@@ -207,105 +188,10 @@ def escape_markdown_v2(text: str) -> str:
     """Escapes markdown sensitive characters for Telegram."""
     return re.sub(r"([_*[\]()~`>#+\-=|{}.!])", r"\\\1", text)
 
-# ------------------------------ Bot Logger Class ------------------------------
-class BotLogger:
-    """Structured logger using Rich for visual terminal output."""
-    def __init__(self):
-        self.console = Console()
-        self.start_time = time()
-        self.stage_counter = 0
-        self.log_styles = {
-            "memory": "green",
-            "ai": "blue",
-            "process": "magenta",
-            "error": "red",
-            "general": "grey70",
-            "user_query": "cyan",
-            "ai_response": "yellow",
-            "memory_details": "light_slate_blue",
-            "prompt": "bright_blue"
-        }
-        logger.info("BotLogger initialized.")
-
-    def log_stage(self, stage: str, message: str, category: str = "general", detail: str = None):
-        self.stage_counter += 1
-        elapsed = time() - self.start_time
-        header = f"[{elapsed:.1f}s] {stage}"
-        style = self.log_styles.get(category, "default")
-        formatted_msg = f"[{style}]{message}[/{style}]"
-        if detail:
-            formatted_msg += f"\n  [grey70]{detail}[/grey70]"
-        panel = Panel(
-            formatted_msg,
-            title=header,
-            title_align="left",
-            border_style=style,
-            padding=(0, 1),
-            expand=False,
-        )
-        self.console.print(panel)
-
-    def log_error(self, error: str):
-        panel = Panel(
-            f"[bold red]{error}[/bold red]", title="ERROR", border_style="red", expand=False
-        )
-        self.console.print(panel)
-        logger.error(error)
-
-    def log_memory_details(self, user_memory, user_id):
-        #Simplified version, as we have a different memory approach.
-        try:
-            table = Table(title=f"Memory Details for User: {user_id}", title_style="bold", border_style="light_slate_blue")
-            table.add_column("Memory Type", style="cyan")
-            table.add_column("Status", style="magenta")
-
-            #Checkpointer status (MongoDB)
-            if mongodb_client:
-                table.add_row("Persistent Memory (MongoDB)", "Available")
-            else:
-                table.add_row("Persistent Memory (MongoDB)", "Unavailable")
-
-            self.console.print(table)
-
-        except Exception as e:
-            logger.error(f"Error in log_memory_details: {e}")
-            self.log_error(f"Error logging memory details: {e}")
-
-    def log_prompt(self, prompt_data):
-        """Logs the full prompt structure sent to the AI in a structured format."""
-        table = Table(title="🧠 Complete AI Prompt Structure",
-                     title_style="bold bright_blue",
-                     box=box.ROUNDED,
-                     border_style="bright_blue",
-                     header_style="bold cyan")
-
-        table.add_column("Component", style="cyan", width=20)
-        table.add_column("Content", style="bright_white")
-
-        # Add system prompt
-        if "system_prompt" in prompt_data:
-            table.add_row("System Prompt", prompt_data["system_prompt"])
-
-        # Add kid info
-        if "kids_information" in prompt_data:
-            table.add_row("Kids Information", prompt_data["kids_information"])
-
-        # Add AI tone
-        if "ai_tone" in prompt_data:
-            table.add_row("AI Tone", prompt_data["ai_tone"])
-
-        # Add conversation context
-        if "conversation_context" in prompt_data:
-            table.add_row("Conversation Context", prompt_data["conversation_context"])
-
-
-        # Add user query
-        if "user_query" in prompt_data:
-            table.add_row("User Query", prompt_data["user_query"])
-
-        self.console.print(table)
+# ...existing BotLogger definition removed...
 
 # Initialize bot logger globally
+from bot_logger import BotLogger
 bot_logger = BotLogger()
 
 
@@ -366,23 +252,7 @@ def agent(state: AgentState):
 
 
 
-    sys_inst = f"""You are a digital kids nurturing assistant named Blue. Provide accurate, personalized, and natural advice to parents regarding child care.
-Consider the following child information: {kid_info}.
-Adjust your tone based on this setting: {ai_tone}.
-Do not include any greetings, salutations, or sticker instructions in your response.
-Be direct, concise, and fully answer the user's query in warm, supportive Persian.
-
-If the user asks to generate an image or create any kind of visual, identify this as an image generation request.
-DO NOT attempt to generate images yourself. Instead, indicate that you'll use the ImageGenerator tool.
-
-Available tools:
-- ImageGenerator: Generates images based on a text prompt. Provide a detailed prompt and specify a model from: midjourney, dall-e-3, flux-pro, flux-dev, flux.
-
-Example image request detection:
-- "Create an image of a cat" -> Use ImageGenerator
-- "Draw me a landscape" -> Use ImageGenerator
-- "Visualize a futuristic city" -> Use ImageGenerator
-"""
+    sys_inst = get_system_instruction(kid_info, ai_tone, conversation_context)
     if not messages or getattr(messages[0], "role", "").lower() != "system":
         messages.insert(0, SystemMessage(content=sys_inst))
         logger.info("System instruction injected")
@@ -485,47 +355,40 @@ def process_image_tool(state: AgentState) -> AgentState:
     }
 
 def optimize_memory(state: AgentState) -> AgentState:
-    """Optimizes memory by summarizing the conversation history."""
-    THRESHOLD = 10  # Summarize after 10 messages
-    LAST_N = 5  # Keep the last 5 messages in full
-
-    if len(state["messages"]) > THRESHOLD:
-        # 1. Extract the conversation history (excluding the system message).
-        conversation = "\n".join(
-            [
-                f"{msg.type}: {msg.content}"
-                for msg in state["messages"]
-                if isinstance(msg, (HumanMessage, AIMessage))
-            ]
-        )
-
-        # 2. Create a summarization prompt.
-        summary_prompt = f"Summarize the following conversation briefly, focusing on the key topics and requests:\n\n{conversation}"
-
-        # 3. Use the summarization LLM to generate a summary.
-        summary_response = summarization_llm.invoke([HumanMessage(content=summary_prompt)])
-        summary_text = summary_response.content
-        logger.info(f"Conversation summary: {summary_text}")
-
-        # 4.  Create a new message list: System message + Summary + Last N messages.
-        new_messages = [
-            SystemMessage(content=f"Conversation Summary: {summary_text}")
-        ]
-        new_messages.extend(state["messages"][-LAST_N:])  # Keep the last N messages
-        logger.info(f"Session history optimized. New session count: {len(new_messages)}")
-
-        # 5. Return the updated state with the summarized conversation.
-        return {
-            "messages": new_messages,
-            "tool_calls": state.get("tool_calls", []),
-            "requires_tool": state.get("requires_tool", False),
-            "current_tool": state.get("current_tool", None),
-            "chat_id": state["chat_id"],  # Keep chat ID
-        }
-
-    logger.info(f"Session history count remains: {len(state['messages'])}")
-    return state  # Return the original state if no summarization is needed
-
+    THRESHOLD = 5  # Summarize every 5 conversation messages
+    # Count only human and AI messages (exclude system messages)
+    conv_messages = [msg for msg in state["messages"] if isinstance(msg, (HumanMessage, AIMessage))]
+    
+    # Run summarization only if count is a multiple of THRESHOLD
+    if len(conv_messages) % THRESHOLD != 0:
+        logger.info(f"Skipping summarization; conversation message count: {len(conv_messages)}")
+        return state
+    
+    # 1. Extract the conversation history
+    conversation = "\n".join(
+        [f"{msg.type}: {msg.content}" for msg in conv_messages]
+    )
+    
+    # 2. Create a summarization prompt
+    summary_prompt = f"Summarize the following conversation briefly, focusing on the key topics and requests:\n\n{conversation}"
+    
+    # 3. Use the summarization LLM to generate a summary
+    summary_response = summarization_llm.invoke([HumanMessage(content=summary_prompt)])
+    summary_text = summary_response.content
+    logger.info(f"Conversation summary: {summary_text}")
+    
+    # 4. Build a new message list: a system message with summary + last THRESHOLD messages.
+    new_messages = [SystemMessage(content=f"Conversation Summary: {summary_text}")]
+    new_messages.extend(state["messages"][-THRESHOLD:])
+    logger.info(f"Session history optimized. New session count: {len(new_messages)}")
+    
+    return {
+        "messages": new_messages,
+        "tool_calls": state.get("tool_calls", []),
+        "requires_tool": state.get("requires_tool", False),
+        "current_tool": state.get("current_tool", None),
+        "chat_id": state["chat_id"],
+    }
 
 
 # ============================================================
@@ -642,23 +505,26 @@ def run_agent(query, chat_id, message_id):
 
         try:
             # Use .stream() for a better interactive experience
+            collected_content = ""
+            full_response = ""
             for output in graph.stream(inputs, config=config):
-                #Handle intermediate outputs if needed, for example, for streaming
-                pass
-            # Replace the response extraction code with this:
-            final_output = output
-            ai_response_content = ""
+                # Check if the output contains a message
+                if "optimize_memory" in output and "messages" in output["optimize_memory"]:
+                    messages = output["optimize_memory"]["messages"]
+                    if messages and len(messages) > 0:
+                        collected_content += messages[-1].content
+                elif "agent" in output and "messages" in output["agent"]:
+                    collected_content += output["agent"]["messages"][-1].content
+                elif "image_tool" in output and "messages" in output["image_tool"]:
+                    collected_content += output["image_tool"]["messages"][-1].content
 
-            # Check all possible output nodes
-            if "optimize_memory" in final_output:
-                # Get the last message from optimize_memory node
-                messages = final_output["optimize_memory"]["messages"]
-                if messages and len(messages) > 0:
-                    ai_response_content = messages[-1].content
-            elif "agent" in final_output:
-                ai_response_content = final_output["agent"]["messages"][-1].content
-            elif "image_tool" in final_output:
-                ai_response_content = final_output["image_tool"]["messages"][-1].content
+                # Check if the collected content appears to be a complete message
+                if collected_content.strip():
+                    full_response = collected_content
+                    collected_content = ""  # Reset for the next message
+
+            # Use the full response
+            ai_response_content = full_response
 
             # Add safety check to prevent empty responses
             if not ai_response_content:
@@ -680,7 +546,6 @@ def run_agent(query, chat_id, message_id):
             bot_logger.log_stage("Response Sent", "AI response sent to user", category="ai_response")
 
             bot_logger.log_memory_details(user_memory,user_id) #Simplified call
-
 
         except Exception as e:
           error_message = f"Error during LangGraph execution: {e}"
