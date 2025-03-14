@@ -4,6 +4,7 @@ from rich.table import Table
 from rich import box
 from time import time
 import logging
+from datetime import datetime  # Added for timestamp info
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +29,9 @@ class BotLogger:
 
     def log_stage(self, stage: str, message: str, category: str = "general", detail: str = None):
         self.stage_counter += 1
-        elapsed = time() - self.start_time
-        header = f"[{elapsed:.1f}s] {stage}"
+        # Added current timestamp in hh:mm:ss format
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        header = f"[{timestamp}] {stage}"
         style = self.log_styles.get(category, "default")
         formatted_msg = f"[{style}]{message}[/{style}]"
         if detail:
@@ -43,6 +45,10 @@ class BotLogger:
             expand=False,
         )
         self.console.print(panel)
+
+    def log_info(self, message: str):
+        # New minimal info log for quick one-line messages
+        self.console.print(f"[green][INFO][/green] {message}")
 
     def log_error(self, error: str):
         panel = Panel(f"[bold red]{error}[/bold red]", title="ERROR", border_style="red", expand=False)
