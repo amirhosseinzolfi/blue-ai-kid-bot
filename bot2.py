@@ -16,6 +16,7 @@ from time import time
 import re
 from typing import Annotated, Sequence, Literal, Union, Dict, Any
 from typing_extensions import TypedDict
+from telebot.apihelper import ApiTelegramException
 
 
 # ============================================================
@@ -144,7 +145,7 @@ logger.info("Info LLM initialized.")
 # LLM for summarization
 summarization_llm = ChatOpenAI(  # Dedicated LLM for summarization
     base_url="http://localhost:15205/v1",
-    model_name="gemini-2.0-flash",  # Use a faster model
+    model_name="gpt-4o",  # Use a faster model
     temperature=0.3,  # Lower temperature for more concise summaries
     api_key="324"
 )
@@ -174,23 +175,95 @@ STICKER_SETTING = None  # Sticker ID if neededيال
 # ============================================================
 # ------------------------------ Utility Functions ------------------------------
 def refine_ai_response(text: str) -> str:
-    """Cleans up and reformats the AI's output."""
+    """Cleans up and reformats the AI's output for Telegram MarkdownV2 compatibility,
+    preserving **bold** formatting."""
     text = re.sub(r"\[Sticker:.*?\]", "", text)
-    text = re.sub(r"\*\*(.*?)\*\*", r"*\1*", text)
-    text = re.sub(r"__([^_]+)__", r"*\1*", text)
-    text = re.sub(r"^####\s+(.*?)$", r"🔶 \1", text, flags=re.MULTILINE)
-    text = re.sub(r"^###\s+(.*?)$", r"⭐ \1", text, flags=re.MULTILINE)
-    text = re.sub(r"^##\s+(.*?)$", r"🔷 \1", text, flags=re.MULTILINE)
-    text = re.sub(r"^#\s+(.*?)$", r"🟣 \1", text, flags=re.MULTILINE)
+    # Removed conversion of ** to * so that bold markers remain intact.
+    # Instead, convert double underscores to single underscores for italic if needed.
+    text = re.sub(r"__([^_]+)__", r"_\1_", text)
+    text = re.sub(r"^####\s+(.*?)$", r"▫️\1", text, flags=re.MULTILINE)
+    text = re.sub(r"^###\s+(.*?)$", r"🟢 \1", text, flags=re.MULTILINE)
+    text = re.sub(r"^##\s+(.*?)$", r"🔶 \1", text, flags=re.MULTILINE)
+    text = re.sub(r"^#\s+(.*?)$", r"⭐ \1", text, flags=re.MULTILINE)
     text = re.sub(r"^(?:\s*[-*]\s+)(.*?)$", r"🔹 \1", text, flags=re.MULTILINE)
     text = re.sub(r"^(?:\s*\d+\.\s+)(.*?)$", r"🔹 \1", text, flags=re.MULTILINE)
+    # Collapse multiple asterisks to exactly two for bold formatting.
+    text = re.sub(r"\*{2,}", r"**", text)
+    text = re.sub(r"\.{3,}", "...", text)
     return text.strip()
 
 def escape_markdown_v2(text: str) -> str:
-    """Escapes markdown sensitive characters for Telegram."""
-    return re.sub(r"([_*[\]()~`>#+\-=|{}.!])", r"\\\1", text)
+    """Escapes markdown sensitive characters for Telegram using negative lookbehind to avoid double escaping."""
+    import re
+    return re.sub(r"(?<!\\)([*_\[\]()~`>#+\-=|{}.!])", r"\\\1", text)
 
-# ...existing BotLogger definition removed...
+# Updated safe_escape_markdown_v2: process markdown links separately.
+def safe_escape_markdown_v2(text: str) -> str:
+    """
+    Escapes MarkdownV2 reserved characters in text, preserving proper markdown link formatting.
+    Only the link text is escaped while the URL remains unchanged.
+    """
+    import re
+    # Callback to escape link text only.
+    def escape_link(match):
+        link_text = match.group(1)
+        url = match.group(2)
+        return f"[{escape_markdown_v2(link_text)}]({url})"
+        
+    # Define pattern for markdown links.
+    link_pattern = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+    parts = []
+    last_end = 0
+    for m in link_pattern.finditer(text):
+        # Process text before the markdown link.
+        pre_text = text[last_end:m.start()]
+        parts.append(escape_markdown_v2(pre_text))
+        # Process the markdown link using the callback.
+        parts.append(escape_link(m))
+        last_end = m.end()
+    # Process any trailing text.
+    parts.append(escape_markdown_v2(text[last_end:]))
+    return "".join(parts)
+
+# New conversion: Replace "**bold**" with "<b>bold</b>"
+def convert_bold_markdown_to_html(text: str) -> str:
+    import re
+    return re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", text)
+
+# Update the function to properly handle bold text for Telegram MarkdownV2
+def convert_bold_to_telegram_format(text: str) -> str:
+    """
+    Converts all forms of bold markdown syntax to properly escaped bold text for Telegram MarkdownV2.
+    This properly handles asterisks and preserves links.
+    """
+    import re
+    
+    # First, extract and temporarily store all markdown links to protect them
+    links = []
+    def extract_links(match):
+        links.append((match.group(1), match.group(2)))
+        return f"LINK_PLACEHOLDER_{len(links)-1}_"
+    
+    link_pattern = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+    text_with_placeholders = link_pattern.sub(extract_links, text)
+    
+    # Convert **bold** to properly escaped bold format: *bold*
+    # Note: For Telegram MarkdownV2, bold is single asterisks but needs escaping
+    text_with_placeholders = re.sub(r"\*\*(.*?)\*\*", r"*\1*", text_with_placeholders)
+    
+    # Remove any standalone single asterisks (improper formatting)
+    text_with_placeholders = re.sub(r"(?<!\*)\*(?!\*)\s*", "", text_with_placeholders)
+    
+    # Restore all links
+    for i, (link_text, url) in enumerate(links):
+        # Handle bold within link text
+        link_text = re.sub(r"\*\*(.*?)\*\*", r"*\1*", link_text)
+        text_with_placeholders = text_with_placeholders.replace(
+            f"LINK_PLACEHOLDER_{i}_", 
+            f"[{link_text}]({url})"
+        )
+        
+    return text_with_placeholders
 
 # Initialize bot logger globally
 from bot_logger import BotLogger
@@ -253,7 +326,13 @@ def agent(state: AgentState):
     if messages:
         conversation_context = "\n".join([f"{msg.type}: {msg.content}" for msg in messages[-5:] if isinstance(msg,(HumanMessage,AIMessage))])
 
-
+    # Extract image data from the query, if present
+    image_data = None
+    user_query = messages[-1].content if messages else ""
+    image_match = re.search(r"\[IMAGE:data:image/jpeg;base64,(.*?)\]", user_query)
+    if image_match:
+        image_data = image_match.group(1)
+        user_query = re.sub(r"\[IMAGE:data:image/jpeg;base64,(.*?)\]", "[IMAGE]", user_query)  # Replace actual data with marker
 
     sys_inst = get_system_instruction(kid_info, ai_tone, conversation_context, user_name)
     if not messages or getattr(messages[0], "role", "").lower() != "system":
@@ -267,10 +346,10 @@ def agent(state: AgentState):
         "ai_tone": ai_tone,
         "user_name": user_name,  # Added user name to logging
         "conversation_context": conversation_context,
-        "user_query": messages[-1].content if messages else ""
+        "user_query": user_query, # Use modified query
+        "has_image": image_data is not None
     }
     bot_logger.log_prompt(prompt_data)
-
 
     model = ChatOpenAI(
         base_url="http://localhost:15205/v1",
@@ -279,6 +358,7 @@ def agent(state: AgentState):
         api_key="324"
     )
 
+    # Invoke the model with the modified query
     response = model.invoke(messages)
     logger.info("Agent returned direct response")
     return {"messages": [response], "requires_tool": False, "current_tool": None, "chat_id": chat_id}
@@ -332,33 +412,32 @@ def process_image_tool(state: AgentState) -> AgentState:
     # Generate image
     image_url = generate_image(prompt, model)
     
-    # Create a cleaner, more minimal result message that will render properly in Telegram
-    # Note: We don't escape here because it will be handled when sending in run_agent
     result_message = (
-        f"🖼️ تصویر شما آماده است!\n\n"
-        f"[مشاهده تصویر]({image_url})\n\n"
-        f"_مدل: {model}_"
+        "🖼️ تصویر شما آماده است!\n\n"
+        "[مشاهده تصویر](%s)" % image_url
     )
-
+    
     # Create tool call record
     tool_call = {
         "tool_name": "ImageGenerator",
         "tool_input": {"prompt": prompt, "model": model},
         "tool_result": image_url
     }
-    # Update state with the tool result
     tool_calls = state.get("tool_calls", [])
     tool_calls.append(tool_call)
-
-    # Add special metadata to indicate this is a Markdown message
-    new_message = AIMessage(content=result_message, additional_kwargs={"is_image_response": True})
-
+    
+    # Escape reserved MarkdownV2 characters in the result message
+    new_message = AIMessage(
+        content=safe_escape_markdown_v2(result_message),
+        additional_kwargs={"is_image_response": True}
+    )
+    
     return {
         "messages": state["messages"] + [new_message],
         "tool_calls": tool_calls,
         "requires_tool": False,
         "current_tool": None,
-        "chat_id": chat_id  # Keep chat ID
+        "chat_id": state["chat_id"]  # ...existing code...
     }
 
 def optimize_memory(state: AgentState) -> AgentState:
@@ -571,7 +650,15 @@ def run_agent(query, chat_id, message_id):
             if not ai_response_content:
                 ai_response_content = "متاسفم، نتوانستم پاسخ مناسبی بیابم. لطفا دوباره تلاش کنید."
 
+            # First refine the response (format bullets, etc.)
             refined_response = refine_ai_response(ai_response_content)
+            
+            # Then convert bold markdown to Telegram-compatible format
+            telegram_formatted = convert_bold_to_telegram_format(refined_response)
+            
+            # Finally escape for MarkdownV2 while preserving links
+            safe_response = safe_escape_markdown_v2(telegram_formatted)
+            
             bot_logger.log_stage("Response", f"Generated response: {refined_response[:50]}...", category="ai_response")
 
             # ------------------- Send Final Response to User -------------------
@@ -579,11 +666,11 @@ def run_agent(query, chat_id, message_id):
                 bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=loading_msg_id,
-                    text=escape_markdown_v2(refined_response),
+                    text=safe_response,   # Keep using MarkdownV2 with proper escaping
                     parse_mode=MARKDOWN_V2_PARSE_MODE,
                 )
             except ApiTelegramException as e:
-                bot.send_message(chat_id, escape_markdown_v2(refined_response), parse_mode=MARKDOWN_V2_PARSE_MODE)
+                bot.send_message(chat_id, safe_response, parse_mode=MARKDOWN_V2_PARSE_MODE)
             bot_logger.log_stage("Response Sent", "AI response sent to user successfully.", category="ai_response")
 
             bot_logger.log_memory_details(user_memory, user_id)
@@ -591,7 +678,12 @@ def run_agent(query, chat_id, message_id):
             error_message = f"Error during LangGraph execution: {e}"
             logger.error(error_message)
             bot_logger.log_stage("Error", error_message, category="error")
-            bot.edit_message_text(chat_id=chat_id, message_id=loading_msg_id, text=escape_markdown_v2("An error occurred. Please try again."))
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=loading_msg_id,
+                text="An error occurred. Please try again.",  # plain error message
+                parse_mode=MARKDOWN_V2_PARSE_MODE
+            )
 
     elapsed_time = time() - start_time
     bot_logger.log_stage("Process Complete", f"Query processed in {elapsed_time:.2f}s.", category="process")

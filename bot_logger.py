@@ -86,5 +86,13 @@ class BotLogger:
         if "conversation_context" in prompt_data:
             table.add_row("Conversation Context", prompt_data["conversation_context"])
         if "user_query" in prompt_data:
-            table.add_row("User Query", prompt_data["user_query"])
+            # Combine all components to show the full prompt
+            full_prompt = (
+                prompt_data["system_prompt"] + "\n" +
+                "Kids Information: " + prompt_data["kids_information"] + "\n" +
+                "AI Tone: " + prompt_data["ai_tone"] + "\n" +
+                "Conversation Context: " + prompt_data["conversation_context"] + "\n" +
+                "User Query: " + prompt_data["user_query"]
+            )
+            table.add_row("Full Prompt", full_prompt)
         self.console.print(table)

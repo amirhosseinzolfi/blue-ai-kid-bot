@@ -11,14 +11,61 @@ from bot2 import run_agent, escape_markdown_v2, DEFAULT_AI_TONE, KIDS_INFO, LOAD
 from bot2 import get_user_memory  # and any other required functions
 from bot2 import info_llm  # for summaries in settings
 
+# Import SystemMessage and HumanMessage for use with info_llm
+from bot2 import SystemMessage, HumanMessage
+from prompts import get_info_prompt, get_ai_tone_prompt
+
 # Initialize Telegram Bot
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "your_token_here")
 bot = TeleBot(TELEGRAM_BOT_TOKEN)
+bot_info = bot.get_me()
+bot_username = bot_info.username if bot_info else ""
 
 # Global variable for temporary settings
 setting_data = {}
 STICKER_SETTING = None  # Sticker ID if needed
+# Add this import at the top of your telegram_bot.py file
+from prompts import story_prompt
+# Add this import if not already present
+from prompts import story_prompt, luluby_prompt
 
+@bot.message_handler(commands=["lullabies"])
+def handle_lullabies(message):
+    """
+    Handle the request for night lullabies.
+    When this command is triggered, it sends the predefined luluby prompt to the AI.
+    """
+    chat_id = message.chat.id
+    message_id = message.message_id
+    user_id = str(message.from_user.id)
+    
+    # Log the lullaby request
+    logging.info(f"Lullaby request from user {user_id}")
+    
+    # Use the luluby prompt from prompts.py instead of user input
+    from bot2 import run_agent
+    
+    # Run the agent with the luluby prompt instead of user message text
+    run_agent(luluby_prompt, chat_id, message_id)
+# Add this command handler in your bot setup section
+@bot.message_handler(commands=["story"])
+def handle_educational_stories(message):
+    """
+    Handle the request for educational stories.
+    When this command is triggered, it sends the predefined story prompt to the AI.
+    """
+    chat_id = message.chat.id
+    message_id = message.message_id
+    user_id = str(message.from_user.id)
+    
+    # Log the educational story request
+    logging.info(f"Educational story request from user {user_id}")
+    
+    # Use the story prompt from prompts.py instead of user input
+    from bot2 import run_agent
+    
+    # Run the agent with the story prompt instead of user message text
+    run_agent(story_prompt, chat_id, message_id)
 # ================================
 # Telegram Command and Callback Handlers
 # ================================
@@ -143,6 +190,19 @@ def handle_refresh_memory(call):
 
 @bot.message_handler(func=lambda message: True, content_types=["text"])
 def handle_text_message(message):
+    # For group chats, respond only if:
+    # 1. The message is a reply to a bot message, OR
+    # 2. The message contains "tara" or "تارا" or tags the bot.
+    if message.chat.type in ["group", "supergroup"]:
+        reply_condition = (
+            message.reply_to_message is not None and 
+            message.reply_to_message.from_user is not None and 
+            message.reply_to_message.from_user.id == bot_info.id
+        )
+        text_lower = message.text.lower() if message.text else ""
+        tag_condition = bot_username and f"@{bot_username}".lower() in text_lower
+        if not (reply_condition or re.search(r'\b(tara|تارا)\b', text_lower) or tag_condition):
+            return
     chat_id = message.chat.id
     from bot2 import get_user_memory, info_llm
     user_id = str(chat_id)
@@ -155,23 +215,40 @@ def handle_text_message(message):
     if (chat_id in setting_data and setting_data[chat_id].get("kid_info_pending")):
         mode = setting_data[chat_id].get("kid_info_mode")
         kid_info = message.text
-        prompt = f"خلاصه و بهینه سازی اطلاعات کودک:\n{kid_info}\n\nخلاصه:"
-        summarized_info = info_llm.invoke(prompt).content
+        
+        # Use get_info_prompt with the kid_info as system instruction
+        system_instruction = get_info_prompt(kid_info)
+        summarized_info = info_llm.invoke([
+            SystemMessage(content=system_instruction),
+            HumanMessage(content="organize this information for child profile")
+        ]).content
+        
         if mode == "add" and user_memory.get_kid_info():
-            summarized_info = info_llm.invoke(f"اطلاعات قبلی:\n{user_memory.get_kid_info()}\n\nاطلاعات جدید:\n{summarized_info}\n\nادغام و بهینه سازی:").content
+            merged_info = f"اطلاعات قبلی:\n{user_memory.get_kid_info()}\n\nاطلاعات جدید:\n{summarized_info}"
+            # Use get_info_prompt again for the merged info
+            system_instruction = get_info_prompt(merged_info)
+            summarized_info = info_llm.invoke([
+                SystemMessage(content=system_instruction),
+                HumanMessage(content="Merge these pieces of information into a cohesive child profile")
+            ]).content
+            
         user_memory.set_kid_info(summarized_info)
         setting_data[chat_id]["kid_info_pending"] = False
         del setting_data[chat_id]["kid_info_mode"]
         bot.send_message(chat_id, f"✅ اطلاعات کودک ثبت شد:\n{summarized_info}")
         logging.info(f"Kid info updated for user {chat_id}")
+    
     elif (chat_id in setting_data and setting_data[chat_id].get("ai_tone_pending")):
         ai_tone = message.text
-        prompt = f"خلاصه و بهینه سازی لحن هوشمند:\n{ai_tone}\n\nخلاصه:"
+        # For tone, we'll use a more generic approach with get_ai_tone_prompt
+        from prompts import get_ai_tone_prompt
+        prompt = get_ai_tone_prompt(ai_tone)
         summarized_tone = info_llm.invoke(prompt).content
         user_memory.set_ai_tone(summarized_tone)
         setting_data[chat_id]["ai_tone_pending"] = False
         bot.send_message(chat_id, f"✅ لحن هوشمند ثبت شد:\n{summarized_tone}")
         logging.info(f"AI tone updated for user {chat_id}")
+    
     else:
         run_agent(message.text, chat_id=chat_id, message_id=message.message_id)
         logging.info(f"Handled text message for user {chat_id}")
@@ -233,6 +310,8 @@ def setup_bot_commands():
         BotCommand("start", "شروع"),
         BotCommand("help", "راهنما"),
         BotCommand("setting", "تنظیمات"),
+        BotCommand("story","قصه_های_آموزنده"),
+        BotCommand("lullabies", "لالایی های شبانه برای کودکان"),
     ]
     try:
         bot.set_my_commands(commands=bot_commands, scope=BotCommandScopeDefault())
@@ -240,7 +319,6 @@ def setup_bot_commands():
         logging.info("Bot commands setup completed.")
     except Exception as e:
         logging.error(f"Error setting up bot commands: {e}")
-
 def start_bot():
     setup_bot_commands()
     logging.info("Bot commands configured. Starting polling...")

@@ -27,7 +27,7 @@ image_generation_tool = Tool(
 # Step 3: Initialize the LangChain LLM
 llm = ChatOpenAI(
     base_url="http://localhost:15205/v1",
-    model_name="gemini-1.5-flash",
+    model_name="gemini-2.0-flash",
     api_key="324",
     temperature=0.5
 )
